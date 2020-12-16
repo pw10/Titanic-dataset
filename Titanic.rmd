@@ -1,0 +1,701 @@
+---
+title: "Titanic"
+author: "Paweł‚ Warchoł‚ i Jakub Rudzki"
+date: "6 04 2020"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+    theme: readable
+---
+
+
+<style type="text/css">
+
+body{ 
+      font-size: 14px;
+  }
+  
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#pakiety
+
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+library(caret)
+library(randomForest)
+library(ROCR)
+
+library(mice)
+
+library(class)
+library(dummies)
+library(dplyr)
+```
+
+# Wstęp
+
+14 kwietnia 1912 roku doszło do najsłynniejszej w historii katastrofy morskiej. Około godziny 23:40 statek RMS Titanic zderzył się z górą lodową, w skutek czego zatonął. Z 2200 pasażerów (wraz z załogą) statku w katastrofie życie straciło ponad 1500 osób. Choć całkowita pojemność szalup ratunkowych pozwalała na przyjęcie 1100 osób, wiele z nich odpłynęło częściowo pustych. Nie podjęto działań mających na celu ratowanie osób, które znalazły się w wodzie.
+
+## Cel Badania
+
+Celem badania jest stworzenie modeli predykcyjnych dokonujących klasyfikacji pasażerów (nie przeżył / przeżył) i wybór najlepszego z tych modeli. Ponadto, na ich podstawie sprawdzimy jakie czynniki wpłynęły na przeżywalność katastrofy. Skorzystaliśmy z czterech metod:
+
+* Regresja logistyczna
+* Metoda K-najbliższych sąsiadów
+* Metoda losowych lasów decyzyjnych
+* Naiwny klasyfikator Bayesa
+
+# Dane
+
+Badanie oparliśmy na zbiorze danym "Titanic: Machine Learning from Disaster" (dostępnym na stronie kaggle.com). Pobrany zbiór posiadał 891 rekordów i 12 zmiennych. Poniżej umieszczamy ich krótką charakterystykę.
+
+* PassengerID - identyfikator przyporządkowujący każdemu rekordowi liczbę naturalną od 1 do 891.
+* Survived - zmienna binarna informująca czy dany pasażer przeżył katastrofę.
+* Pclass - w statku można było podróżować pierwszą, drugą i trzecią klasą. Zmienna informuje którą klasą podróżował dany pasażer. Może być istotna, gdyż pasażerowie z lepszych klas, w związku z wyższą opłatą, mogli spodziewać się pierwszeństwa w kolejce do szalup ratunkowych.
+* Name - imię i nazwisko pasażera wraz z tytułem. Możliwe, że pasażerowie uznani za "bardziej wartościowych" (tj. posiadający odpowiednie tytuły wojskowe bądź naukowe) mieli pierwszeństwo.
+* Age - wiek pasażera wyrażony w latach. Wiek mógłby być uznany za istotny czynnik z dwóch powodów. Możliwe, że chciano uratować jak najwięcej młodych ludzi (z powodu perspektywy dłuższego życia przed nimi), oraz ludzie w kwiecie wieku, jako sprawniejsi mieli fizycznie większe szanse na przeżycie w kryzysowych warunkach.
+* SibSp - sumaryczna liczba rodzeństwa i małżonków pasażera (przebywających na statku). Być może ludzie posiadający rodzeństwo/będący w związku byli bardziej zdeterminowani do ucieczki/przeżycia.
+* Parch - liczba rodziców i dzieci pasażera (przebywających na statku). Podobnie jak powyżej.
+* Ticket - numer biletu.
+* Fare - opłata za rejs.
+* Cabin - numer kabiny w której pasażer mieszkał. Hipotetycznie pasażerowie z kabin znajdujących się nieopodal szalup ratunkowych mogli mieć większe szanse na przeżycie.
+* Embarked - zmienna czynnikowa posiadająca 3 warianty. Statek płynął po trasie Southampton (S) - Cherbourg (C) - Queenstown (Q) - Nowy Jork. Wartość zmiennej informuje w którym porcie wsiadł pasażer.
+
+## Wstępna obróbka danych
+
+Bezpośrednio po zaimportowaniu do programu dane posiadały chaotyczną strukturę. W celu zwiększenia przejrzystości i transparentności konieczne było dostosowanie ich do potrzeb badania. Część zmian miała charakter kosmetyczny - na przykład w przypadku zmiennej objaśnianej *Survived* z postaci (0,1) na postać ("dead", "alive"). Część pozornie nieznacznych zmian, była w rzeczywistości bardzo istotna. Na przykład zmienna Pclass ze zmiennej liczbowej (o wartościach 1, 2, 3) na zmienną czynnikową ("1st", "2nd", "3rd"). W miejsca brakujących wartości wprowadzono NA, by program mógł je w odpowiedni sposób zauważyć.
+```{r}
+data <- read.csv("titanic.csv", header = T)
+
+data$Survived <- as.factor(data$Survived)
+levels(data$Survived) <- c("dead", "alive")
+
+data$Pclass <- as.factor(data$Pclass)
+levels(data$Pclass) <- c("1st", "2nd", "3rd")
+
+data$Name <- as.character(data$Name)
+
+data$Ticket <- as.character(data$Ticket)
+
+data$Cabin <- as.character(data$Cabin)
+data$Cabin[which(data$Cabin=="")] <- NA
+
+levels(data$Embarked)[levels(data$Embarked)==""] <- NA
+```
+
+## Pierwsza selekcja zmiennych
+
+Po wykonaniu wspomnianych wyżej operacji, podjęliśmy pierwsze decyzje odnośnie terminacji niektórych zmiennych. Zdecydowaliśmy się usunąć zmienną *Name* - po oględzinach zauważyliśmy, że w dominującej części tytułów występowały jedynie zwroty nakierowujące na płeć, co w bezpośrendi spoób przekładało się na informacje zawarte już w zmiennej *Sex*. Ponadto usunęliśmy zmienną *Ticket* - występujące tam ciągi znaków były praktycznie niemożliwe do zinterpretowania i nieprzydatne do analizy. Zniknęła też zmienna *Cabin* - charakteryzowała się ogromną liczbą braków (687), przez co zdecydowaliśmy o usunięciu jej z dalej rozważanego zbioru. Zniknęła też zbędna zmienna *PassengerID*, która w kontekście badania byłaby bezużyteczna.
+
+```{r include=FALSE}
+data <- data[c(3,5:8,10,12,2)]
+```
+
+
+## Uzupełnienie braków danych.
+
+W celu sprawdzenia jak wygląda sytuacja z brakami danych zliczyliśmy obserwacje, które zawierają co najmniej 1 brak oraz sprawdziliśmy jak sytuacja wygląda na tle wszystkich zmiennych.
+
+```{r}
+#kwestia brakow danych
+sum(is.na(data))
+
+library(mice)
+md.pattern(data)
+
+```
+
+Stąd widzimy, że mamy 179 obserwacji z brakami danych, wśród których 2 obserwacje nie zawierają informacji odnośnie portu, z którego dany pasażer wypłynął oraz pozostałe 177 obserwacji nie zawiera wartości dla zmiennej Age. W celu osiągnięcia jak najlepszych wyników predykcji dla tworzonych modeli, zdecydowaliśmy o nieusuwaniu tych obserwacji ze zbioru (ich usunięcie spowodowałoby znaczną utratę informacji, szczególnie że stanowiły one około 20% wszystkich obserwacji) i zastąpieniu wartości NA poprzez prognozy wykonane metodą Random forest tj. lasów losowych. Jest to metoda, opierająca swoje działanie na stworzeniu wielu modeli drzew losowych i dokonywaniu prognozy na ich podstawie - dzięki czemu pozornie niezbyt dobre w kontekście klasyfikacji narzędzie jakim są drzewa decyzyjne staje się bardzo silnym narzędziem.
+
+
+```{r}
+#uzupelnianie
+library(missForest)
+
+set.seed(10)
+data_2 <- missForest(data[,-8])
+data_2 <- data_2$ximp
+data_2$Y <- data$Survived
+data_2$Age <- as.integer(data_2$Age)
+
+sum(is.na(data_2))
+summary(data_2)
+str(data_2)
+
+```
+
+
+Widzimy, że brakujące wartości zostały uzupełnione. Struktura danych i ich podstawowe statystyki opisowe po uzupełnieniu prezentują się jak powyżej.
+
+## Wartości odstające
+
+W celu wychwycenia obserwacji, które w znaczący sposób odstają od reszty i mogą nieporządanie wpłynąć na model utworzyliśmy wykresy pudełkowe z wąsami dla zmiennych numerycznych.
+
+```{r}
+ggplot(data = data, aes(x = Survived, y = Age)) + geom_boxplot()
+```
+
+W przypadku zmiennej age nie zauważyliśmy sytuacji wymagającej naszej ingerencji. Występowały osoby starsze, jednak na tyle mało licznie, że uznaliśmy sytuację za normalną.
+
+```{r}
+ggplot(data = data, aes(x = Survived, y = Fare)) + geom_boxplot()
+```
+
+Dla zmiennej fare (oznaczającej wysokość opłaty za bilet) zauważamy, że występują obserwacje odstające bardzo wyraźnie.
+```{r}
+data[which(data$Fare>300),]
+```
+Po bliższemu przyjrzeniu się odstającym rekordom zauważyliśmy, że dotyczą trójki pasażerów z pierwszej klasy, którzy zapłacili za rejs ogromną opłatę. Wszystkie te osoby przeżyły, co wydaje nam się być logiczne i sensowne, zdecydowaliśmy się więc na pozostawienie tych obserwacji w ostatecznym zestawie danych.
+
+## Ostateczny zbiór danych
+Poniżej przedstawione zostaną wizualizacje mające na celu przybliżenie struktury danych w zmiennych wybranych do badania.
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Pclass, fill = Y)) + geom_bar(position = position_dodge(), size = 1.05, color = "white") +
+  theme_bw() + theme(axis.text.x = element_text(size = 11),
+                     axis.title.x = element_text(face = "bold", size = 13),
+                     legend.text = element_text(size = 11, face = "bold"),
+                     legend.title = element_blank(), legend.position = "bottom") +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-.22, color="black",
+            position = position_dodge(0.9), size=4) + scale_fill_manual(values=c('black','darkgrey')) 
+
+```
+
+Już w przypadku pierwszej zmiennej objaśniającej *Pclass* wyraźnie widać różnice pomiędzy poszczególnymi klasami. Jedynie w pierwszej klasie liczba osób, które przeżyły jest wyższa niż liczba zgonów. Dla klasy drugiej wartości te są porównywalne, natomiast w klasie trzeciej, dysproporcja jest ogromna na niekorzyść pasażerów, którym udało się przeżyć
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Sex, fill = Y)) + geom_bar(position = position_dodge(), size = 1.05, color = "white") +
+  theme_bw() + theme(axis.text.x = element_text(size = 11),
+                     axis.title.x = element_text(face = "bold", size = 13),
+                     legend.text = element_text(size = 11, face = "bold"),
+                     legend.title = element_blank(), legend.position = "bottom") +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-.22, color="black",
+            position = position_dodge(0.9), size=4) + scale_fill_manual(values=c('black','darkgrey')) 
+```
+
+W zmiennej *Sex* również widać bardzo wyraźne dysproporcje. Więcej kobiet przeżyło katastrofę, natomiast w grupie mężczyzn sytuacja jest odwrotna - na każdego mężczyznę, który przeżył przypadało 4, którym się to nie udało.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Embarked, fill = Y)) + geom_bar(position = position_dodge(), size = 1.05, color = "white") +
+  theme_bw() + theme(axis.text.x = element_text(size = 11),
+                     axis.title.x = element_text(face = "bold", size = 13),
+                     legend.text = element_text(size = 11, face = "bold"),
+                     legend.title = element_blank(), legend.position = "bottom") +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-.22, color="black",
+            position = position_dodge(0.9), size=4) + scale_fill_manual(values=c('black','darkgrey')) 
+
+```
+
+Analizując porty z których pasażerowie wypłynęli od razu widzimy, że największa liczba osób płynęła od samego portu macierzystego w Southampton. Zgodne z informacjami zawartymi we wstępnie, większości pasażerów nie udało się tej podróży przeżyć. Pasażerów płynących z Cheerbourg i Quennstown jest odpowiednio mniej, więc ciężko mówić o istotnych statystycznie zależnościach już na tym etapie.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Age, fill = Y)) + geom_histogram(binwidth = 15) +
+  theme_bw() + scale_fill_manual(values=c('black','darkgrey')) + 
+  scale_x_continuous(breaks = c(0,20,40,60,80))
+```
+
+Widzimy, że struktura wieku przypominała rozkład normalny. Liczba osób, które przeżyły wydaje się rozkładać proporcjonalnie w każdej grupie wiekowej, oprócz najmłodszych pasażerów, gdzie więcej osób przeżyło katastrofę.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = SibSp, fill = Y)) + geom_histogram(binwidth = 1) +
+  theme_bw() + scale_fill_manual(values=c('black','darkgrey'))
+```
+
+Zdecydowana większość pasażerów podróżowała bez rodzeństwa bądź małżonka/małżonki. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Parch, fill = Y)) + geom_histogram(binwidth = 1) +
+  theme_bw() + scale_fill_manual(values=c('black','darkgrey'))
+```
+
+Bardzo podobna sytuacja ma miejsce w przypadku pasażerów podróżujących z rodzicami lub dziećmi.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = data_2, aes(x = Fare, fill = Y)) + geom_histogram(binwidth = 50) +
+  theme_bw() + scale_fill_manual(values=c('black','darkgrey')) +
+  scale_x_continuous(breaks = c(0,50,100,200,300,400,500))
+```
+
+Wydaje się, że wraz ze wzrostem wysokości opłaty dokonywanej za rejs stosunek liczby osób które przeżyły, do tych, które zginęły w trakcie katastrofy, jest coraz lepszy.
+
+# Część właściwa badania
+
+Po wstępie i opisaniu danych, na których oparte jest badanie należy przejść do właściwych czynności. Pierwszą z nich jest podzielenie zbioru danych na dwie części - uczącą i testującą. Wybrana przez nas proporcja:
+
+* 80% obserwacji w zbiorze *train*
+* 20% obserwacji w zbiorze *test*
+
+```{r include=FALSE}
+#ziarno
+set.seed(10)
+#losowanie numerow indeksow
+indices <- sample(nrow(data_2), round(0.8*nrow(data)), replace = FALSE)
+#podzial na podst wylosowanych indeksow
+train <- data_2[indices,]
+test <- data_2[-indices,]
+```
+
+By podział był możliwe najlepszy, zdecydowaliśmy się dla otrzymanych podzbiorów utworzyć wizualizacje sprawdzające strukturę danych. Jak na załączonych wykresach widać - wartości wydają się być zbliżone, stąd podział można uznać za satysfakcjonujący.
+```{r}
+for (i in 1:ncol(train)){
+  if (is.numeric(train[,i]))
+  {
+    
+    grid.arrange(
+      ggplot(data = train, aes(x = train[,i])) + geom_histogram() +
+        labs(x = paste(colnames(train)[i]), title = "Zbior uczacy") + theme_bw() +
+        theme(axis.text.x = element_text(size = 11),
+              axis.title.x = element_text(face = "bold", size = 13)),
+      
+      ggplot(data = test, aes(x = test[,i])) + geom_histogram() +
+        labs(x = paste(colnames(test)[i]), title = "Zbior testowy") + theme_bw() +
+        theme(axis.text.x = element_text(size = 11),
+              axis.title.x = element_text(face = "bold", size = 13)))
+    
+    
+  }
+  
+  else {
+    
+    grid.arrange(nrow = 1,
+                 
+                 ggplot(data = train, aes(x = train[,i])) + geom_bar(position = position_dodge()) + theme_bw() +
+                   labs(x = paste(colnames(train)[i]), title = "Zbior uczacy") +
+                   theme(axis.text.x = element_text(size = 11),
+                         axis.title.x = element_text(face = "bold", size = 13),
+                         legend.text = element_text(size = 11, face = "bold"),
+                         legend.title = element_blank(),
+                         legend.position = "bottom") +
+                   geom_text(stat = 'count', aes(label=..count..), vjust=-.22, color="black",
+                             position = position_dodge(0.9), size=4),
+                 
+                 ggplot(data = test, aes(x = test[,i])) + geom_bar(position = position_dodge()) + theme_bw() +
+                   labs(x = paste(colnames(test)[i]), title = "Zbior testowy") +
+                   theme(axis.text.x = element_text(size = 11),
+                         axis.title.x = element_text(face = "bold", size = 13),
+                         legend.text = element_text(size = 11, face = "bold"),
+                         legend.title = element_blank(),
+                         legend.position = "bottom") +
+                   geom_text(stat = 'count', aes(label=..count..), vjust=-.22, color="black",
+                             position = position_dodge(0.9), size=4))
+    
+  }
+}
+```
+
+## Regresja logistyczna
+
+Pierwszą metodą, przy pomocy której będziemy sprawdzać od czego zależała przeżywalność katastrofy z 1912 roku to regresja logistyczna. Można z niej skorzystać gdy do czynienia mamy z dychotomiczną zmienną objaśnianą. Model regresji logistycznej jest szczególnym przypadkiem GLM, w którym wykorzystano funkcję logit. Funkcja ta przekształca prawdopodobieństwo na logarytm szans.
+
+### Modelowanie
+
+Jako, że cały proces obróbki zmiennych został zaprezentowany wcześniej. Pozostała jedynie kwestia stworzenia optymalnego modelu. W tym celu utworzony zostanie model zerowy - z wszystkimi dostępnymi zmiennymi objaśniającymi, a następnie metodą krokową wsteczną (ze względu na kryterium informacyjne Akaikego) odnaleziona zostanie najlepsza kombinacja zmiennych.
+
+```{r echo=FALSE}
+model0 <-glm(Y ~., data = train, family = binomial("logit"))
+cf <- step(model0)
+```
+
+Zmienne rekomendowane przez metodę: *Pclass*, *Sex*, *Age*, *SibSp*, *Embarked*. Widząc jednak mały wpływ zmiennej *Embarked*, oraz niemalże identyczną wartość AIC, zdecydowaliśmy się na nie umieszczanie jej w ostatecznym modelu.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+model1 <- glm(Y ~ Pclass + Sex + Age + SibSp, data = train, family = binomial("logit"))
+summary(model1)
+```
+Podczas analizy poszczególnych współczynników zauważyć można wyraźnie negatywny wpływ każdego z nich. Przemieszczanie się w drugiej i trzeciej klasie istotnie zmniejszało szanse na przeżycie. Sytuacja wygląda podobnie dla płci, kobiety miały większą szansę na przeżycie. W przypadku wieku, każdy rok zmniejszał szansę na przeżycie w znikomy sposób. Być może wycentrowanie tej zmiennej na "przeciętnej" wartości dałoby precyzyjniejsze wyniki. Co ciekawe, posiadanie rodzeństwa lub bycie w związku małżeńskim również przechylało szalę w stronę nieprzeżycia.
+
+### Badanie jakości predykcji
+
+Korzystając z wylosowanego wcześniej zbioru testowego funkcją **predict** wyliczyliśmy szanse. Następnie dla każdej wartości większej niż 0,5 wstawiliśmy 1 - w znaczeniu prognozy, że dany pasażer przeżyje. W przeciwnym wypadku 0. Następnie zestawiliśmy wyniki predykcyjne z rzeczywistymi. Uzyskaliśmy precyzję na poziomie 80%.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+prob_pred = predict(model1, type = 'response', newdata = test)
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+
+Y_bin <- as.factor(test$Y)
+levels(Y_bin) <- c(0,1)
+
+
+error <- mean(Y_bin != y_pred)
+paste('Accuracy',round(1-error,4))
+
+acc_lr <- 1-error
+```
+
+Dla powyższego modelu przedstawiono również krzywą ROC: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fitpred = prediction(prob_pred, Y_bin)
+fitperf = performance(fitpred,"tpr","fpr")
+plot(fitperf,lwd=2,main="ROC Curve")
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+AUC w przypadku tego modelu wyniosło:
+```{r}
+auc_lr <- performance(fitpred, measure = "auc")@y.values
+auc_lr
+```
+
+Co jest naprawdę dobrym wynikiem. Te metryki posłużą w ostatniej części do porównania modeli.
+
+
+## Metoda K-najbliższych sąsiadów
+
+Drugim narzędziem z którego zdecydowaliśmy się skorzystać to metoda K-najbliższych sąsiadów (nazwa z angielskiego k nearest neighbours). Sposób działania jest bardzo prosty, dla każdego rekordu obliczana jest odległość od pozostałych elementów. W kolejnym kroku przeliczana jest liczba obiektów z danych grup w tym k - elementowym zbiorze. A następnie na tej podstawie przyporządkowywana jest wartość zmiennej objaśnianej (taka sama jak najliczniejszego elementu w zbiorze). 
+
+
+Z racji specyfiki metody KNN w zbiorze wykorzystanym do budowy tego modelu znaleźć się mogą jedynie zmienne numeryczne. Stąd dla zmiennych kategorycznych zdecydowaliśmy o ich odpowiednim przekształceniu do formy zero-jedynkowej, dzięki czemu będzie możliwe ich uwzględnienie w modelu.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+d3 <- data_2
+Pclass <- dummy(d3$Pclass)
+female <- ifelse(d3$Sex == "female",1,0 )
+embarked <- dummy(d3$Embarked)
+Y <- as.factor(d3$Y)
+levels(Y) <- c(0,1)
+```
+
+*Standaryzacja*
+
+W przypadku, gdy zmienne istotnie różnią się od siebie rzędem wielkości należy je znormalizować. W badaniu użyliśmy standaryzacji, jako jednej z metod normalizacji danych. W przypadku nie zastosowania takiego rozwiązania, zmienne o dużych wartościach mogłyby zbyt mocno wpłynąć na predykcję.
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fare <- (d3$Fare - mean(d3$Fare))/sd(d3$Fare)
+
+age <- (d3$Age - mean(d3$Age))/sd(d3$Age)
+
+Sibsp <- (d3$SibSp - mean(d3$SibSp))/sd(d3$SibSp)
+
+Parch <- (d3$Parch - mean(d3$Parch))/sd(d3$Parch)
+
+d4 <- data.frame(Y, Pclass, female, age, Sibsp, Parch, fare, embarked)
+
+train2 <- d4[indices,]
+test2 <- d4[-indices,]
+```
+
+Po przygotowaniu zmiennych stworzona została pętla mająca na celu zlokalizowanie odpowiedniego **k**, dla którego jakość predykcji jest najlepsza.
+
+```{r}
+output <- data.frame(1:40)
+for (i in 1:40) {
+  set.seed(10)
+  knn1 <- knn(train = train2[,-1], test = test2[,-1], cl = train2[,1], k = i)
+  
+  t1 <- table(test2$Y,knn1)
+  
+  output[i,2] <- (t1[1,1]+t1[2,2])/sum(t1)
+}
+colnames(output) <- c("k", "accuracy")
+
+result <- arrange(output, desc(accuracy))
+head(result)
+```
+
+Jak widać celność predykcji jest największa dla **k** równego 19 i wynosi aż 84,83%, co jest zaskakująco dobrym wynikiem.
+<br/> 
+Poniżej wykres krzywej ROC:
+
+```{r}
+set.seed(10)
+mod <- knn(train = train2[,-1], test = test2[,-1], cl = train2[,1], k = 19, prob = TRUE)
+
+probs_knn <- ifelse(mod == 1, attributes(mod)$prob, 1 - attributes(mod)$prob)
+
+knn_prediction <- prediction(probs_knn, test2$Y)
+perf_knn <- performance(knn_prediction, "tpr", "fpr")
+auc_knn <- performance(knn_prediction, measure = "auc")@y.values
+plot(perf_knn, lwd = 2,main="ROC Curve")
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+Oraz wartość AUC:
+```{r}
+auc_knn
+```
+
+Również na bardzo wysokim poziomie.
+
+## Lasy losowe
+
+Algorytm lasów losowych, jak już przy okazji uzupełniania braków danych wspomniano, polega na stworzeniu wielu drzew decyzyjnych i dokonaniu na ich podstawie predykcji. W problemach klasyfikacyjnych o tym jaką klasę należy przypisać do danego obiektu decyduje 'głosowanie większościowe', podobnie jak w metodzie KNN. Pomimo, że metoda ta bazuje na drzewach decyzyjnych, które pojedynczo mają sporo wad i nie są zbyt dobrym narzędziem, to dzięki wspomnianej specyfice potrafi dawać naprawdę dobre rezultaty. W kontekście tworzonych drzew należy wspomnieć jeszcze o fakcie, że w celu uniknięcie sytuacji, w której wpływ jednej ze zmiennych jest na tyle duży, że dominuje ona każde tworzone drzewo i tym samym zmniejsza wagę pozostałych, stosuje się pewną modyfikację. Mianowicie, do budowy kolejnych drzew wykorzystywana jest jedynie część ze zmiennych, najczęściej pierwiatek z liczby wszystkich zmiennych. Z tej racji, w naszym modelu zdecydowaliśmy o losowaniu do każdego drzewa 3 spośród dostępnych zmiennych.
+
+Poniżej model i output funkcji `confusionMatrix` dla stwożonego modelu:
+
+```{r, include = FALSE}
+data <- read.csv("titanic.csv", header = T)
+
+#1 - poprawianie struktury danych
+data$Survived <- as.factor(data$Survived)
+levels(data$Survived) <- c("dead", "alive")
+
+data$Pclass <- as.factor(data$Pclass)
+levels(data$Pclass) <- c("1st", "2nd", "3rd")
+
+data$Name <- as.character(data$Name)
+
+data$Ticket <- as.character(data$Ticket)
+
+data$Cabin <- as.character(data$Cabin)
+data$Cabin[which(data$Cabin=="")] <- NA
+
+levels(data$Embarked)[levels(data$Embarked)==""] <- NA
+
+#usunięcie niepotrzebnych zmiennych
+data <- data[c(3,5:8,10,12,2)]
+#uzupelnianie
+library(missForest)
+
+set.seed(10)
+data_2 <- missForest(data[,-8])
+data_2 <- data_2$ximp
+data_2$Y <- data$Survived
+data_2$Age <- as.integer(data_2$Age)
+#podzial na ucz i testowy
+#ziarno
+set.seed(10)
+#losowanie numerow indeksow
+indices <- sample(nrow(data_2), round(0.8*nrow(data)), replace = FALSE)
+#podzial na podst wylosowanych indeksow
+train <- data_2[indices,]
+test <- data_2[-indices,]
+```
+
+
+```{r}
+#model lasy losowe
+library(caret)
+library(randomForest)
+library(ROCR)
+
+set.seed(100)
+rf <- randomForest(formula = Y ~ ., data = train, ntree = 1000, mtry = 3)
+
+pred_rf <- predict(rf, test, type = "class")
+CM_rf <- confusionMatrix(pred_rf, test$Y, positive = levels(test$Y)[2])
+CM_rf
+```
+
+Widzimy, że model oparty na algorytmie lasów losowych uzyskał skuteczność predykcji na poziomie 84,83%. 
+
+Poniżej krzywa ROC:
+```{r}
+pred_rf_prob <- predict(rf, test, type = "prob")[,2]
+pred_rf_prediction <- prediction(pred_rf_prob, test$Y, label.ordering = c("dead", "alive"))
+perf_rf <- performance(pred_rf_prediction, "tpr", "fpr")
+auc_rf <- performance(pred_rf_prediction, measure = "auc")@y.values
+plot(perf_rf, lwd = 2,main="ROC Curve")
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+Oraz AUC uzyskane przez model:
+
+```{r}
+auc_rf
+```
+
+Wartość AUC przekroczyła próg 0.9 co jest świetnym wynikiem, co zresztą widać po krzywej ROC.
+
+W celu sprawdzenia, jakie zmienne były najważniejsze w modelu stworzono wykres za pomocą funkcji `varImpPlot`, który obrazuje istotność zmiennych w modelu:
+
+```{r}
+#IMPORTANCE rf
+imp.rf <- varImp(rf)
+data.imp.rf <- data.frame(istotnosc = imp.rf$Overall, zmienna = colnames(train)[1:7])
+
+
+ggplot(data = data.imp.rf, aes(x = reorder(zmienna, -istotnosc), y = istotnosc)) +
+  geom_bar(stat = "identity", color = "black", size = 1, width = .75, fill = "black") +
+  theme_bw() +
+  labs(y = "Istotność zmiennej", x = "") + 
+  theme(axis.text.x = element_text(size = 11),
+        axis.title.x = element_text(size = 12))
+```
+
+
+Istotność zmiennych jest weryfikowana na  podstawie sumy spadku wartości indeksu Giniego  po podziale zbioru względem danej zmiennej. Oznacza to, że za zmienne najbardziej istotne należy uznać te o największej wartości sumy spadków – pokazuje to, że wykorzystanie danej zmiennej do podziału drzewa w największym stopniu wpływało na lepsze predykcje. Widzimy, że najważniejszą zmienną była zmienna Sex, w dalszej kolejność Fare, Age oraz Pclass. Pozostałe zmienne były wyraźnie mniej istotne.
+
+
+
+##Klasyfikator naiwny Bayesa
+
+Ostatnim z modeli będzie klasyfikator naiwny Bayesa. Technika ta opiera się na twierdzeniu Bayesa, które mówi, że prawdopodobieństwo warunkowe bycia w stanie X, pod warunkiem posiadania własności C jest równe: P(X|C) = P(C|X) * P(X) / P(C). Prawdopodobieństwa użyte we wzorze w łatwy sposób można obliczyć na podstawie danych. Sytuacja jest jednak bardziej skomplikowana, kiedy zmiennych (własności) jest więcej niż tylko 1. Ten problem jednak zdecydowano się 'obejść' poprzez założenie, że zmienne są niezależne (bez znaczenia jak sytuacja wygląda w praktyce). Dzięki temu, w przypadku użycia kilku zmiennych do prognozy, prawdopodobieństwo przynależności danej obserwacji do klasy X pod warunkiem posiadania własności C1, C2, .. Cn można obliczyć jako iloczyn prawdopodobieństw warunkowych, takich jak podano wcześniej, dla każdej zmiennej. Znacząco uprasza to rachunki, jednak założenie to praktycznie nigdy nie jest spełnione w rzeczywistości. Stąd słowo "naiwny" w nazwie metody. Jednak mimo tego faktu, metoda naiwna Bayesa potrafi dawać wyniki zbliżone, a czasami nawet lepsze niż inne, bardziej skomplikowane metody.</br>
+W ramach tej metody użyte mogą być jedynie zmienne kategoryczne, żeby był sens liczenia dla nich prawdopodobieństw. Na podstawie wykresów uwzględnionych w opisie danych zdecydowano o:
+
+* pogrupowaniu zmiennych SibSp oraz Parch w 3 grupy oznaczające: 0, 1 i 2 lub więcej,
+
+* pogrupowaniu zmiennej Fare w 4 grupy: pierwsza grupa - opłata mniejsza niż 7.91 (1 kwantyl), druga - między 7.91, a 14.45 (mediana), trzecia - między medianą, a 31 (3 kwantyl), czwarta - między 31, a 100 oraz piąta, czyli grupa osób które zapłaciły za rejs zdecydowanie więcej niż inni - > 100,
+
+* pogrupowaniu zmiennej Age w grupy: 0-10, 11-28, 29-36, 36+. Jak widzieliśmy na wykresie wcześniej, wśród najmłodszych zdecydowanie inaczej rozkładały się proporcje jeśli chodzi o przeżycie katastrofy / zaginięcie w niej. Stąd 1 grupa to przedział 0-10, a kolejne wyznaczane są przez 2 i 3 kwantyl.
+
+```{r}
+library(naivebayes)
+train$Fare <- as.factor(cut(train$Fare, breaks = c(-1, 7.91, 14.45, 31, 100, 1000), labels = c("A","B","C","D","E")))
+test$Fare <- as.factor(cut(test$Fare, breaks = c(-1, 7.91, 14.45, 31, 100, 1000), labels = c("A","B","C","D","E")))
+
+train$SibSp <- as.factor(cut(train$SibSp, breaks = c(-1, 0.1 , 1, 10), labels = c("0","1","2/+")))
+test$SibSp <- as.factor(cut(test$SibSp, breaks = c(-1, 0.1 , 1, 10), labels = c("0","1","2/+")))
+
+train$Parch <- as.factor(cut(train$Parch, breaks = c(-1, 0.1 , 1, 10), labels = c("0","1","2/+")))
+test$Parch <- as.factor(cut(test$Parch, breaks = c(-1, 0.1 , 1, 10), labels = c("0","1","2/+")))
+
+train$Age <- as.factor(cut(train$Age, breaks = c(0,10,28,36,81), labels = c("A","B","C","D")))
+test$Age <- as.factor(cut(test$Age, breaks = c(0,10,28,36,81), labels = c("A","B","C","D")))
+```
+
+
+Dla tak przygotowanych zmiennych zbudowano model i otrzymano takie oceny jego jakości:<br/>
+
+confusionMatrix:
+```{r}
+nb <- naive_bayes(data = train, Y ~ ., laplace = 0.001)
+
+pred_nb <- predict(nb, test, type = "class")
+
+CMnb <- confusionMatrix(pred_nb, test$Y, positive = levels(test$Y)[2])
+
+CMnb
+```
+
+AUC i krzywa ROC:
+
+```{r}
+#AUC
+pred_nb_prob <- predict(nb, test, type = "prob")[,2]
+pred_nb_prediction <- prediction(pred_nb_prob, test$Y, label.ordering = c("dead", "alive"))
+perf_nb <- performance(pred_nb_prediction, "tpr", "fpr")
+auc_nb <- performance(pred_nb_prediction, measure = "auc")@y.values
+plot(perf_nb, lwd = 2,main="ROC Curve")
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+auc_nb
+```
+
+Widzimy, że podany model osiągnął skuteczność prognoz na poziomie 78% oraz AUC wynoszące około 0.875. Są to dość dobre wyniki, jednak troszeczkę gorsze od wcześniej użytych metod. </br>
+
+W celu sprawdzenia jakie czynniki wpływały na to jak klasyfikowano obserwacje przedstawione zostaną tablice zawierające prawdopodobieństwa warunkowe, o których pisaliśmy wcześniej. Na ich podstawie postaramy się sprawdzić, co mogło wpływać na to czy dany pasażer przeżył katastrofę Titanica. Szukamy takich prawdopodobieństw, które będą dla wartości danej zmiennej będą charakteryzować się dużym ilorazem jeśli chodzi o prawdopodobieństwo dla grupy która przeżyła / prawdopodobieństwa dla grupy która nie przeżyła - będzie to oznaczać, że dla danej wartości zmiennej wystąpiła dysproporcja, wskazująca, że cecha pozytywnie wpływała na szanse na przeżycie katastrofy. Analogicznie, jeśli ten iloraz będzie mały to cecha negatywnie wpływała na te szanse. Będziemy szukać ilorazów w okolicach 2 (im większych tym lepiej) lub mniejszych od 1/2 (analogicznie - im mniejszy tym lepiej, bo to oznacza dużą dysproporcje w obrębie danej grupy obserwacji), ale uwzględnić należy również sensowność potencjalnych wniosków oraz to jak liczne były dane grupy - iloraz równy 2 da nam zarówno 0.04/0.02, jak i 0.5/0.25, lecz w pierwszym przypadku będzie on obliczony jedynie na podstawie 6% obserwacji ze zbioru, a w drugiej - 75%. Stąd im większe będą wartości prawdopodobieństw tym bardziej należy zwrócić uwagę na daną cechę, tym mniej przypadku w takich wynikach.
+
+```{r, echo = FALSE}
+library(kableExtra)
+
+round(nb$tables$Pclass,2) %>% kable(format='html', caption = "Pclass") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$Sex,2) %>% kable(format='html', caption = "Sex") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$SibSp,2) %>% kable(format='html', caption = "SibSp") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$Age,2) %>% kable(format='html', caption = "Age") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$Parch,2) %>% kable(format='html', caption = "Parch") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$Fare,2) %>% kable(format='html', caption = "Fare") %>% kable_styling(full_width = F, position = "float_left")
+round(nb$tables$Embarked,2) %>% kable(format='html', caption = "Embarked") %>% kable_styling(full_width = F, position = "left")
+```
+
+<br/><br/><br/><br/>
+Widzimy, że jeśli chodzi o zmienną Pclass, podróżujący 1szą klasą mieli zdecydowanie większe szanse na przeżycie, niż podróżujący gorszymi klasami. Jeśli ktoś nie przeżył katastrofy, to aż 67% spośród nich podróżowało 3 klasą. </br>
+Podobnie dużą różnicę widać jeśli chodzi o płeć - spośród ludzi, którzy zginęli, aż 85% to mężczyźni, podczas gdy aż 67% osób, które przeżyły to kobiety.</br>
+Gdy spojrzymy na zmienną Fare, widzimy, że wraz ze wzrostem opłaty (kolejne litery alfabetu to coraz większe opłaty) iloraz  prawdopodobieństw jest coraz bardziej na korzyść kolumny alive - stąd wniosek, że im więcej ktoś zapłacił za rejs tym większe miał szanse na przeżycie katastrofy.</br>
+Widzimy również, że w przypadku zmiennej Age, jedynie w najmłodszej grupie wiekowej widać większą różnicę - prawdopodobieństwo, że ktoś należy do tej grupy pod warunkiem, że przeżył jest niemal dwukrotnie większe, niż że do niej należy po warunkiem, że nie przeżył, a pozostałe grupy wydają się nie wskazywać na żadną zależność - stąd w kolejnym modelu można wyciągnąć wniosek, że wiek wpływał na przeżywalność. W tym wypadku model wskazuje, że osoba z najmłodszej grupy miała większe szanse na przeżycie niż z jakiejś grupy starszej, co wydaje się bardzo logiczne - często to właśnie życie najmłodszych ratowane jest w pierwszej kolejności. 
+
+
+##Porównanie modeli
+
+Poniżej przedstawiono wartości metryk accuracy (dokładność) oraz AUC jakie osiągnęły poszczególne modele.
+
+<br/>
+
+W formie tabelarycznej:
+
+```{r}
+res <- data.frame(AUC = 1:4, ACC = 1:4)
+
+rownames(res) <- c("REGRESJA LOG", "KNN", "LASY LOSOWE", "BAYES")
+
+res[1,1] <- auc_lr
+res[1,2] <- acc_lr
+res[2,1] <- auc_knn
+res[2,2] <- result$accuracy[1]
+res[3,1] <- auc_rf
+res[3,2] <- CM_rf$overall[[1]]
+res[4,1] <- auc_nb
+res[4,2] <- CMnb$overall[[1]]
+
+round(res,3) %>% kable() %>% kable_styling()
+```
+
+Oraz w formie graficznej: 
+
+```{r}
+
+
+res <- round(res,3)
+#ACC
+ggplot(data = res, aes(x = rownames(res), y = ACC)) +
+  geom_bar(stat = "identity", position = position_dodge(), color = "black", size = 1, width = .75) +
+  theme_bw() +
+  labs(y = "DOKŁADNOŚĆ", x = "", title = "Wykres porównawczy zastosowanych metod pod względem ACC") +
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.x = element_text(size = 13),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12)) +
+  geom_text(vjust=-.5, color="black", data = res, aes(x = rownames(res), y = ACC, label = ACC),
+            position = position_dodge(0.9), size=4, fontface = "bold") 
+
+#AUC
+ggplot(data = res, aes(x = rownames(res), y = AUC)) +
+  geom_bar(stat = "identity", position = position_dodge(), color = "black", size = 1, width = .75) +
+  theme_bw() +
+  labs(y = "AUC", x = "", title = "Wykres porównawczy zastosowanych metod pod względem AUC") +
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.x = element_text(size = 13),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12)) +
+  geom_text(vjust=-.5, color="black", data = res, aes(x = rownames(res), y = AUC, label = AUC),
+            position = position_dodge(0.9), size=4, fontface = "bold")
+
+  
+```
+
+
+Zarówno pod względem AUC jak i skuteczności predykcji najlepszym okazał się model oparty na algorytmie lasów losowych - jako jedyny osiągnął AUC większe od 0.9, a także skuteczność na poziomie 84%. Co zaskakujące równie dobrze spisał się pod tym kątem model KNN, lecz słabiej wypadł pod kątem AUC. Pozostałe modele (regresja logistyczna i naiwny klasyfikator Bayesa) wypadły trochę słabiej, jednak dostarczają one więcej informacji pod kątem analizy czynników wpływających na to czy pasażer przeżył katastrofę Titanica czy też nie. <br/>
+Jednak pod kątem prognozowania, w tym badaniu, jako najlepszy należy wskazać **model oparty na algorytmie lasów losowych**, choć model oparty na KNN okazał się być naprawdę nieznacznie gorszy.
+
+##Podsumowanie, wnioski, pomysły
+
+Jednym z celów badania było sprawdzenie jakie czynniki wpływały na przeżywalność katastrofy. Na podstawie badania można wyciągnąć następujące wnioski:
+
+* zdecydowanie większe szanse na przeżycie katastrofy miały kobiety, aniżeli mężczyźni,
+
+* im gorszą klasą podróżował dany pasażer tym malały jego szanse na przeżycie katastrofy,
+
+* w najmłodszej grupie wiekowej (mamy na myśli dzieci i młodzież) szanse na przeżycie były większe niż u pasażerów, którzy byli starsi od nich,
+
+* wg modelu regresji logistycznej negatywnie na szanse przeżycie wpływał również fakt podróżowania razem z rodzeństwem lub małżonkiem / małżonką - możliwe, że osoby te ze względu na panującą na pokładzie panikę (lub jakieś sytuacje losowe) były rozdzielone i próbowały się odszukać, przez co traciły cenny czas i inni docierali do szalup przed nimi,
+
+* wydaje się również, że wraz ze wzrostem wysokości opłat za rejs szanse na przeżycie były coraz większe - co brzmi dość sensownie, bo wydaje się, że Ci którzy zapłacili najwięcej mogli być potraktowani bardziej 'priorytetowo',
+
+* zmienne Parch i Embarked wydają się nie mieć istotnego wpływu co jest zgodne z naszą intuicją - niezbyt widzimy powód, żeby port z którego podróż rozpoczął dany pasażer miał znaczenie w kontekście przeżywalności katastrofy. Z kolei jednak zmienna Parch mogłaby mieć analogiczne znaczenie co zmienna SibSp, jednak nie zostało to wykazane w żadnym modelu. Należy jednak pamiętać, że zmienna SibSp okazała się istotna tylko w przypadku modelu regresji logistycznej, stąd, na podstawie badania, jej znaczenie jest mniejsze niż pozostałych zmiennych,
+
+* jak wspomniano we wcześniejszej części, pod kątem rezultatów klasyfikacji, najlepszym modelem okazał się model oparty na algorytmie lasów losowych.
+
+
+W ramach projektu przygotowaliśmy dane i stworzyliśmy w oparciu o nie 4 modele. Podczas wykonywania tych czynności napotkaliśmy na różne problemy, które opisaliśmy w ramach tego referatu i przedstawiliśmy nasze pomysły na rozwiązanie sytuacji. Jednak nie są to oczywiście jedyne możliwe rozwiązania. Patrząc z perspektywy na przeprowadzone badanie udało nam się wpaść na kilka pomysłów, co można byłoby poprawić, gdzie spróbować czegoś innego, jakie inne rozwiązania mogłyby (lub nie) sprawdzić się lepiej. Oto nasze wnioski i pomysły:
+
+* skoro zaskakująco dobrze zadziałał model KNN, być może jego rozbudowana wersja, czyli ważna metoda KNN dałaby jeszcze lepsze rezultaty,
+
+* analogicznie, w przypadku regresji liniowej zastosować można było inne metody wyboru zmiennych objaśniających do modelu - jak chociażby metoda Hellwiga czy metoda krokowa wprzód lub inne,
+
+* jeśli chodzi o model lasów losowych, pole do popisu wydaje się jeszcze większe, szczególnie ze względu na możliwość szukania najlepszych parametrów- czy to dot. pojedynczych drzew tworzących model czy to ogólnych parametrów modelu. Wykorzystaliśmy wartości domyślne w większości parametrów, ale próba zbudowania wielu modeli i sprawdzenia jakie parametry będą najlepsze pozwoliłaby prawdopodobnie dodatkowo poprawić skuteczność modelu,
+
+* w przypadku modelu Bayesa, możliwe, że zmienne numeryczne należało pogrupować w inny sposób i to poprawiłoby wyniki - z perspektywy czasu zastanawia czy skoro dla najmłodszej grupy widać było pewną różnicą jeśli chodzi o szanse na przeżycie, to być może dla grupy osób najstarszych również taka różnica występowała i należało wydzielić najstarszą grupę od wyższego wieku niż 36 lat,
+
+* zbiór danych na jakim pracowaliśmy zawierał 891 obserwacji - nie jest to zbiór mały, ale liczba obserwacji nie jest też jakoś bardzo duża. Stąd być może sensowne byłoby skorzystanie z walidacji krzyżowej w celu otrzymania wyników bardziej miarodajnych i wiarygodnych. Zdecydowaliśmy jednak, że zbiór jest na tyle liczny, że 'tradycyjny' podział zbioru (poparty sprawdzeniem czy proporcje w zbiorach są zachowane) będzie wystarczająco dobry,
+
+* w kontekście skuteczności modeli, możliwe, że przy użyciu innego punktu odcięcia niż standardowe 0.5 wyniki byłyby lepsze - w celu jego wyznaczenia można byłoby użyć np. kryterium Youden'a,
+
+* rzecz jasna uwzględnienie w badaniu kolejnych modeli umożliwiłoby jeszcze dokładniejszą analizę i być może pojawiłyby się nowe, ciekawe wnioski dot. czynników wpływających na przeżywalność katastrofy Titanica,
+
+* po stworzeniu klasyfikatora Bayesowskiego zastanawialiśmy się również czy transformacja zmiennych Parch i SibSp tak jak na potrzeby tej metody, nie byłaby korzystna również w kontekście pozostałych metod. Być może również któraś ze zmiennych, jakie usunęliśmy ze zbioru na etapie przygotowania danych miała cenne informacje o których nie pomyśleliśmy i należało je w jakiś sposób wykorzystać - czy to w aktualnej czy w zmienionej formie. Może też uzupełnieni braków w zmiennej Cabin jednak nie byłoby złym pomysłem, mimo aż 80% deficytu.
+
